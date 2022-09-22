@@ -314,7 +314,7 @@ fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
         writeln!(
             str,
             "{}.       {} {}",
-            i,
+            i + 1,
             pp_secs(rank.1.secs),
             rank.0.mention()
         )
