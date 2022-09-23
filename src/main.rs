@@ -1,4 +1,5 @@
-use chrono::{DateTime, Local, TimeZone, Timelike};
+use chrono::{TimeZone, Timelike, Utc};
+use chrono_tz::US::Pacific;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serenity::futures::StreamExt;
@@ -113,8 +114,8 @@ async fn daily_message(ctx: &Context, channel: &ChannelId) {
     let mut ran = false;
     loop {
         interval.tick().await;
-        let local: DateTime<Local> = Local::now();
-        let is_midnight = local.time().hour() == 0 && local.time().minute() == 0;
+        let now = Utc::now().with_timezone(&Pacific);
+        let is_midnight = now.time().hour() == 0 && now.time().minute() == 0;
         if is_midnight {
             if !ran {
                 send_scores_before(ctx, channel).await;
@@ -330,8 +331,8 @@ fn ordered_daily_scores_by_secs(daily_scores: &HashMap<User, Score>) -> Vec<(&Us
 }
 
 fn sutom_grid_number() -> i64 {
-    let date_grid = Local::today().and_hms(0, 0, 0).timestamp_millis();
-    let date_origin = Local.ymd(2022, 1, 7).and_hms(0, 0, 0).timestamp_millis();
+    let date_grid = Utc::today().with_timezone(&Pacific).and_hms(0, 0, 0).timestamp_millis();
+    let date_origin = Utc.ymd(2022, 1, 7).and_hms(0, 0, 0).with_timezone(&Pacific).timestamp_millis();
     ((date_grid - date_origin) / (24 * 3600 * 1000)) + 1
 }
 

@@ -11,3 +11,4 @@ tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 regex = "1.6.0"
 chrono = "0.4.22"
 lazy_static = "1.4.0"
+chrono-tz = "0.6.3"
