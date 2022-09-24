@@ -112,6 +112,8 @@ impl EventHandler for Handler {
 async fn daily_message(ctx: &Context, channel: &ChannelId) {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut ran = false;
+    let now = Utc::now().with_timezone(&Pacific);
+    println!("The time now is {:?}, lazytime is {:?}", now, now.time());
     loop {
         interval.tick().await;
         let now = Utc::now().with_timezone(&Pacific);
@@ -331,9 +333,17 @@ fn ordered_daily_scores_by_secs(daily_scores: &HashMap<User, Score>) -> Vec<(&Us
 }
 
 fn sutom_grid_number() -> i64 {
-    let date_grid = Utc::today().with_timezone(&Pacific).and_hms(0, 0, 0).timestamp_millis();
-    let date_origin = Utc.ymd(2022, 1, 7).and_hms(0, 0, 0).with_timezone(&Pacific).timestamp_millis();
-    ((date_grid - date_origin) / (24 * 3600 * 1000)) + 1
+    let date_grid = Utc::now()
+        .with_timezone(&Pacific)
+        .date()
+        .and_hms(0, 0, 0)
+        .timestamp_millis();
+    let date_origin = Utc
+        .ymd(2022, 1, 8)
+        .with_timezone(&Pacific)
+        .and_hms(0, 0, 0)
+        .timestamp_millis();
+    ((date_grid - date_origin) as f64 / (24 * 3600 * 1000) as f64).round() as i64 + 1
 }
 
 fn order_all_time(
