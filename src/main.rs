@@ -328,7 +328,13 @@ fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
 
 fn ordered_daily_scores_by_secs(daily_scores: &HashMap<User, Score>) -> Vec<(&User, &Score)> {
     let mut vec: Vec<(&User, &Score)> = daily_scores.iter().collect();
-    vec.sort_by(|a, b| a.1.secs.cmp(&b.1.secs));
+    vec.sort_by(|a, b| {
+        if a.1.secs == b.1.secs {
+            a.1.tries.cmp(&b.1.tries)
+        } else {
+            a.1.secs.cmp(&b.1.secs)
+        }
+    });
     vec
 }
 
@@ -409,6 +415,34 @@ mod tests {
         let names: Vec<&String> = ordered.iter().map(|x| &x.0.name).collect();
         assert_eq!(names, vec!["charly", "alice", "bob"]);
     }
+
+    #[test]
+    fn it_sorts_equal() {
+        let mut scores = HashMap::new();
+        scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+        scores.insert(make_fake_user(2, "alice2"), Score { tries: 1, secs: 9 });
+        scores.insert(make_fake_user(3, "bob"), Score { tries: 1, secs: 10 });
+        scores.insert(make_fake_user(4, "charly"), Score { tries: 3, secs: 8 });
+
+        let ordered = ordered_daily_scores_by_secs(&scores);
+
+        let names: Vec<&String> = ordered.iter().map(|x| &x.0.name).collect();
+        assert_eq!(names, vec!["charly", "alice2", "alice", "bob"]);
+    }
+
+    // #[test]
+    // fn it_sorts_really_equal() {
+    //     let mut scores = HashMap::new();
+    //     scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+    //     scores.insert(make_fake_user(2, "alice2"), Score { tries: 2, secs: 9 });
+    //     scores.insert(make_fake_user(3, "bob"), Score { tries: 1, secs: 10 });
+    //     scores.insert(make_fake_user(4, "charly"), Score { tries: 3, secs: 8 });
+
+    //     let ordered = ordered_daily_scores_by_secs(&scores);
+
+    //     let names: Vec<&String> = ordered.iter().map(|x| &x.0.name).collect();
+    //     assert_eq!(names, vec!["charly", "alice2", "alice", "bob"]);
+    // }
 
     #[test]
     fn it_s_pretty() {
