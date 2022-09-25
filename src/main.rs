@@ -305,13 +305,13 @@ fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
     //     str += &format!("🟥 {} {}\n", rank.0, pp_secs(rank.1.secs));
     // }
     if let Some(rank) = ordered.get(0) {
-        writeln!(str, "1. 🥇 {} {}", pp_secs(rank.1.secs), rank.0.mention()).unwrap();
+        writeln!(str, "1. 🥇 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
     }
     if let Some(rank) = ordered.get(1) {
-        writeln!(str, "2. 🥈 {} {}", pp_secs(rank.1.secs), rank.0.mention()).unwrap();
+        writeln!(str, "2. 🥈 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
     }
     if let Some(rank) = ordered.get(2) {
-        writeln!(str, "3. 🥉 {} {}", pp_secs(rank.1.secs), rank.0.mention()).unwrap();
+        writeln!(str, "3. 🥉 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
     }
     for (i, rank) in ordered.iter().enumerate().skip(3) {
         writeln!(
@@ -319,7 +319,7 @@ fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
             "{}.       {} {}",
             i + 1,
             pp_secs(rank.1.secs),
-            rank.0.mention()
+            rank.0.name
         )
         .unwrap();
     }
@@ -374,7 +374,7 @@ fn pp_all_time(all_time_board: &HashMap<User, HashMap<Position, usize>>) -> Stri
             str,
             "{}. {} 🥇x{} 🥈x{} 🥉x{}",
             idx + 1,
-            user.mention(),
+            user.name,
             table.get(&0).unwrap_or(&0),
             table.get(&1).unwrap_or(&0),
             table.get(&2).unwrap_or(&0)
