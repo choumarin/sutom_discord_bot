@@ -13,6 +13,7 @@ use serenity::{async_trait, model::prelude::ChannelId};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -43,7 +44,9 @@ impl TypeMapKey for Config {
     type Value = Conf;
 }
 
-struct Handler;
+struct Handler {
+    is_daily_running: AtomicBool,
+}
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -103,17 +106,23 @@ impl EventHandler for Handler {
             .get::<Config>()
             .expect("Config must exist")
             .sutom_channel;
-        scan_all(&ctx, &sutom_channel).await.unwrap();
 
-        daily_message(&ctx, &sutom_channel).await;
+        if !self.is_daily_running.load(Ordering::Relaxed) {
+            let ctx2 = ctx.clone(); // we can clone, it's just pointers
+            tokio::spawn(async move {
+                daily_message(&ctx2, &sutom_channel).await;
+            });
+
+            self.is_daily_running.swap(true, Ordering::Relaxed);
+        }
     }
 }
 
 async fn daily_message(ctx: &Context, channel: &ChannelId) {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut ran = false;
-    let now = Utc::now().with_timezone(&Pacific);
-    println!("The time now is {:?}, lazytime is {:?}", now, now.time());
+    println!("Daily loop starting");
+    scan_all(ctx, channel).await.unwrap();
     loop {
         interval.tick().await;
         let now = Utc::now().with_timezone(&Pacific);
@@ -126,7 +135,6 @@ async fn daily_message(ctx: &Context, channel: &ChannelId) {
         } else {
             ran = false;
         }
-        // println!("{:?}", ran);
     }
 }
 
@@ -509,7 +517,9 @@ async fn main() {
     // automatically prepend your bot token with "Bot ", which is a requirement
     // by Discord for bot users.
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler)
+        .event_handler(Handler {
+            is_daily_running: AtomicBool::new(false),
+        })
         .await
         .expect("Err creating client");
     {
@@ -526,6 +536,7 @@ async fn main() {
     //
     // Shards will automatically attempt to reconnect, and will perform
     // exponential backoff until it reconnects.
+    println!("Starting client.");
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
