@@ -200,7 +200,7 @@ fn make_times(
 ) -> HashMap<User, HashMap<Position, usize>> {
     let mut time_board: HashMap<User, HashMap<Position, usize>> = HashMap::new();
     for game in all_time.iter().filter_map(|(game_id, game)| {
-        if game_id >= &from_game_id && game_id != &(sutom_grid_number() as usize) {
+        if game_id >= &from_game_id && game_id < &(sutom_grid_number() as usize) {
             Some(game)
         } else {
             None
