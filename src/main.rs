@@ -589,7 +589,7 @@ async fn main() {
     //
     // Shards will automatically attempt to reconnect, and will perform
     // exponential backoff until it reconnects.
-    println!("Starting client.");
+    println!("Starting client v{}", env!("CARGO_PKG_VERSION"));
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
