@@ -94,7 +94,10 @@ impl EventHandler for Handler {
             }
         }
         if msg.content == "!all_time" {
-            send_all_time_scores(&ctx, &msg.channel_id).await;
+            send_time_scores(&ctx, &msg.channel_id, 0).await;
+        }
+        if msg.content == "!last_30" {
+            send_time_scores(&ctx, &msg.channel_id, (sutom_grid_number() - 30) as usize).await;
         }
         scan_message(&ctx, &msg).await;
     }
@@ -170,7 +173,7 @@ async fn send_scores_for_grid(ctx: &Context, channel: &ChannelId, grid_id: usize
     }
 }
 
-async fn send_all_time_scores(ctx: &Context, channel: &ChannelId) {
+async fn send_time_scores(ctx: &Context, channel: &ChannelId, from_game_id: usize) {
     let data_read = ctx.data.read().await;
 
     let leaderboard = data_read
@@ -179,27 +182,37 @@ async fn send_all_time_scores(ctx: &Context, channel: &ChannelId) {
         .read()
         .await;
 
-    let all_time = make_all_time(&leaderboard);
+    let all_time = make_times(&leaderboard, from_game_id);
 
-    if let Err(why) = channel.say(&ctx.http, pp_all_time(&all_time)).await {
+    if let Err(why) = channel
+        .say(&ctx.http, pp_times(&all_time, from_game_id))
+        .await
+    {
         println!("Error sending message: {:?}", why);
     }
 }
 
 type Position = usize;
 
-fn make_all_time(
+fn make_times(
     all_time: &HashMap<usize, DailyScores>,
+    from_game_id: usize,
 ) -> HashMap<User, HashMap<Position, usize>> {
-    let mut all_time_board: HashMap<User, HashMap<Position, usize>> = HashMap::new();
-    for game in all_time.values() {
+    let mut time_board: HashMap<User, HashMap<Position, usize>> = HashMap::new();
+    for game in all_time.iter().filter_map(|(game_id, game)| {
+        if game_id >= &from_game_id {
+            Some(game)
+        } else {
+            None
+        }
+    }) {
         let ordered = ordered_daily_scores_by_secs(game);
         for (position, (user, _)) in ordered.iter().enumerate() {
-            let user_table = all_time_board.entry((*user).clone()).or_default();
+            let user_table = time_board.entry((*user).clone()).or_default();
             *user_table.entry(position).or_default() += 1;
         }
     }
-    all_time_board
+    time_board
 }
 
 async fn scan_all(ctx: &Context, channel: &ChannelId) -> Result<(), String> {
@@ -381,8 +394,25 @@ fn order_all_time(
     vec
 }
 
-fn pp_all_time(all_time_board: &HashMap<User, HashMap<Position, usize>>) -> String {
-    let mut str = String::from("Classement général (temps):\n");
+fn pp_times(
+    all_time_board: &HashMap<User, HashMap<Position, usize>>,
+    from_game_id: usize,
+) -> String {
+    let mut str = String::new();
+    let since_string = format!(
+        "pour les {} derniers jeux",
+        sutom_grid_number() - from_game_id as i64
+    );
+    writeln!(
+        str,
+        "Classement général (temps) {}:\n",
+        if from_game_id == 0 {
+            "depuis toujours"
+        } else {
+            since_string.as_str()
+        }
+    )
+    .unwrap();
     for (idx, (user, table)) in order_all_time(all_time_board).iter().enumerate() {
         writeln!(
             str,
@@ -489,8 +519,31 @@ mod tests {
         leaderboard.insert(2, day2);
         leaderboard.insert(3, day3);
 
-        let all_time_board = make_all_time(&leaderboard);
-        println!("{}", pp_all_time(&all_time_board));
+        let all_time_board = make_times(&leaderboard, 0);
+        println!("{}", pp_times(&all_time_board, 0));
+    }
+
+    #[test]
+    fn it_makes_1_day() {
+        let mut leaderboard = HashMap::new();
+        let mut day1 = DailyScores::new();
+        day1.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+        day1.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
+        day1.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 12 });
+        let mut day2 = DailyScores::new();
+        day2.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 14 });
+        day2.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 1 });
+        day2.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 2 });
+        let mut day3 = DailyScores::new();
+        day3.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 7 });
+        day3.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 19 });
+        day3.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 32 });
+        leaderboard.insert(1, day1);
+        leaderboard.insert(2, day2);
+        leaderboard.insert(3, day3);
+
+        let one_day_board = make_times(&leaderboard, 2);
+        println!("{}", pp_times(&one_day_board, 2));
     }
 }
 
