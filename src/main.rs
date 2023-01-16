@@ -291,7 +291,7 @@ fn extract_score(message: &str) -> Option<(usize, Score)> {
         let mins = re_to_usize(4);
         let mut total_sec = re_to_usize(5);
         total_sec += mins * 60;
-        total_sec += hours * 60;
+        total_sec += hours * 60 * 60;
         let score = Score {
             tries: re_to_usize(2),
             secs: total_sec,
