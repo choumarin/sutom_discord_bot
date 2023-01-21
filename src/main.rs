@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 struct Score {
     tries: usize,
@@ -280,9 +280,10 @@ fn pp_daily(all_time: &HashMap<usize, DailyScores>, grid_id: usize) -> Result<St
 
 fn extract_score(message: &str) -> Option<(usize, Score)> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"SUTOM #(\d+) (\d)/6 (\d+)?h?(\d{2}):(\d{2})").unwrap();
+        static ref RE: Regex = Regex::new(r"SUTOM #(\d+) (\d)/6 (?:(\d)+h)?([0-5]\d):([0-5]\d)").unwrap();
     }
-    if let Some(caps) = RE.captures(message) {
+    let message = message.replace("||", "");
+    if let Some(caps) = RE.captures(&message) {
         let re_to_usize = |key| caps.get(key).unwrap().as_str().parse::<usize>().unwrap();
         let id = re_to_usize(1);
         let hours = caps
@@ -481,6 +482,31 @@ mod tests {
     //     let names: Vec<&String> = ordered.iter().map(|x| &x.0.name).collect();
     //     assert_eq!(names, vec!["charly", "alice2", "alice", "bob"]);
     // }
+
+    #[test]
+    fn it_parses_scores() {
+        let message = "SUTOM #254 5/6 10:56";
+        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        let message = "SUTOM #254 5/6 2h10:56";
+        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10+2*3600})));
+        let message = "SUTOM #a 5/6 2h10:56";
+        assert_eq!(extract_score(message), None);
+        let message = "SUTOM #254 x/6 2h10:56";
+        assert_eq!(extract_score(message), None);
+        let message = "asSUTOM #254 5/6 10:56asd";
+        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        let message = "||SUTOM #254 5/6 10:56||";
+        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        let message = "SUTOM #254 5/6 ||10:56||";
+        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        let message = "SUTOM #254 5/6 510:56";
+        assert_eq!(extract_score(message), None);
+        let message = "SUTOM #254 5/6 60:56";
+        assert_eq!(extract_score(message), None);
+        let message = "SUTOM #254 5/6 10:66";
+        assert_eq!(extract_score(message), None);
+    }
+
 
     #[test]
     fn it_s_pretty() {
