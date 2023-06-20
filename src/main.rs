@@ -12,11 +12,22 @@ use serenity::prelude::*;
 use serenity::{async_trait, model::prelude::ChannelId};
 use std::collections::HashMap;
 use std::env;
-use std::fmt::Write as _;
+use std::fmt::{format, Formatter, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
+
+use charming::component::{Axis, DataZoom, DataZoomType, Title};
+use charming::element::{AxisLabel, AxisTick, AxisType, Color};
+use charming::series::{Bar, Line};
+use charming::theme::Theme;
+use charming::{
+    component::Legend,
+    element::ItemStyle,
+    series::{Pie, PieRoseType},
+    Chart, ImageFormat, ImageRenderer,
+};
 
 #[derive(Debug, PartialEq)]
 #[allow(dead_code)]
@@ -49,7 +60,9 @@ struct Handler {
 }
 
 use serde::Deserialize;
-use serenity::http::{request::RequestBuilder, routing::RouteInfo, Http};
+use serenity::all::{CreateAttachment, CreateMessage};
+use serenity::http::Http;
+use tempfile::{tempfile, Builder, NamedTempFile, TempPath};
 
 #[async_trait]
 pub trait GlobalName {
@@ -58,32 +71,6 @@ pub trait GlobalName {
         &self,
         http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
     ) -> String;
-}
-
-#[non_exhaustive]
-#[derive(Deserialize)]
-struct UserWithGlobalName {
-    global_name: Option<String>,
-}
-
-#[async_trait]
-impl GlobalName for User {
-    async fn global_name(
-        &self,
-        http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
-    ) -> String {
-        let route_info = RouteInfo::GetUser { user_id: self.id.0 };
-        let request = RequestBuilder::new(route_info);
-
-        match http
-            .as_ref()
-            .fire::<UserWithGlobalName>(request.build())
-            .await
-        {
-            Err(..) => self.name.clone(),
-            Ok(u) => u.global_name.unwrap_or(self.name.clone()),
-        }
-    }
 }
 
 #[async_trait]
@@ -104,9 +91,9 @@ impl EventHandler for Handler {
                     .admin_id
             {
                 println!("Admin message:\n{:?}", msg);
-                let typing = msg.channel_id.start_typing(&ctx.http).unwrap();
+                let typing = msg.channel_id.start_typing(&ctx.http);
                 scan_all(&ctx, &msg.channel_id).await.unwrap();
-                typing.stop().unwrap();
+                typing.stop();
                 // msg.channel_id
                 //     .say(&ctx.http, "all done")
                 //     .await
@@ -117,6 +104,49 @@ impl EventHandler for Handler {
                     .await
                     .expect("to send message");
             }
+        }
+        if msg.content == "!my_stats" {
+            let file = format!("{}.png", msg.author.id);
+
+            let data_read = ctx.data.read().await;
+
+            let leaderboard = data_read
+                .get::<Leaderboard>()
+                .expect("Leaderboard should exist")
+                .read()
+                .await;
+
+            let data_raw = user_time_distrib(&leaderboard, &msg.author);
+            println!("{:?}", data_raw);
+
+            let data_raw = data_raw
+                .into_iter()
+                .filter(|(time, _)| *time < 3600usize)
+                .collect::<HashMap<_, _>>();
+
+            let max_time = *data_raw.iter().max_by_key(|(time, _)| *time).unwrap().0;
+            let max_count = *data_raw.iter().max_by_key(|(_, count)| *count).unwrap().1;
+            let mean_time = mean_time(&data_raw);
+            let std_dev = std_dev(&data_raw, mean_time);
+
+            dbg!(max_time, max_count, mean_time, std_dev);
+
+            let img = generate_dist_img(
+                msg.author.global_name.clone().unwrap(),
+                max_time,
+                max_count,
+                mean_time,
+                std_dev,
+                &data_raw,
+            );
+
+            let paths = [CreateAttachment::path(img).await.unwrap()];
+
+            let builder = CreateMessage::new();
+            &msg.channel_id
+                .send_files(&ctx.http, paths, builder)
+                .await
+                .unwrap();
         }
         let re = Regex::new(r"!scores?(?:\s*#?\s*(?P<grid_id>\d+))?").unwrap();
         if let Some(caps) = re.captures(&msg.content) {
@@ -159,11 +189,477 @@ impl EventHandler for Handler {
     }
 }
 
+fn generate_dist_img(
+    username: String,
+    max_time: usize,
+    max_count: usize,
+    mean_time: f64,
+    std_dev: f64,
+    data: &HashMap<usize, usize>,
+) -> TempPath {
+    let mean_time = mean_time / 60.0;
+    let std_dev = std_dev / 60.0;
+    let bell_data: Vec<Vec<_>> = (0..max_time)
+        .map(|x| {
+            let x = x as f64 / 60.0;
+            vec![
+                x,
+                max_count as f64 * ((-(x - mean_time).powi(2)) / (2.0 * std_dev.powi(2))).exp(),
+            ]
+        })
+        .collect();
+
+    let bar_data = (0..max_time)
+        .map(|x| vec![x as f64 / 60.0, (*data.get(&x).unwrap_or(&0)) as f64])
+        .collect();
+    
+    let mean_hours = (mean_time / 60.0).floor();
+    let mean_min = (mean_time - mean_hours * 60.0).floor();
+    let mean_sec = (mean_time * 60.0 % 60.0).round();
+
+    let chart = Chart::new()
+        .title(
+            Title::new()
+                .text(format!("Games for {username}"))
+                .subtext(format!(
+                    "Mean: {}h {:#02}m {:#02}s \nStd dev: {}s",
+                    mean_hours,
+                    mean_min,
+                    mean_sec,
+                    std_dev * 60.0
+                )),
+        )
+        .background_color(Color::Value("white".to_string()))
+        .x_axis(
+            Axis::new()
+                .type_(AxisType::Value)
+                .name("Minutes")
+                .axis_label(AxisLabel::new().rotate(45))
+                .max_interval(1)
+                .min(0)
+                .max(30),
+        )
+        .y_axis(Axis::new().type_(AxisType::Value))
+        .series(Line::new().data(bell_data))
+        .series(Bar::new().data(bar_data).bar_width(2));
+
+    let mut renderer = ImageRenderer::new(1000, 800).theme(Theme::Default);
+
+    let temp_path = Builder::new()
+        .suffix(".png")
+        .tempfile()
+        .unwrap()
+        .into_temp_path();
+    renderer
+        .save_format(ImageFormat::Png, &chart, "test.png")
+        .unwrap();
+    renderer
+        .save_format(ImageFormat::Png, &chart, &temp_path)
+        .unwrap();
+    println!("saved");
+    temp_path
+}
+
+#[test]
+fn test_generate_img() {
+    let data = HashMap::from([
+        (156, 1),
+        (218, 1),
+        (165, 2),
+        (573, 1),
+        (136, 4),
+        (55, 4),
+        (461, 1),
+        (113, 5),
+        (123, 2),
+        (209, 1),
+        (7054, 1),
+        (35, 6),
+        (214, 2),
+        (110, 3),
+        (105, 1),
+        (11256, 1),
+        (519, 2),
+        (106, 1),
+        (255, 2),
+        (18, 2),
+        (244, 1),
+        (3177, 1),
+        (225, 2),
+        (99, 3),
+        (315, 1),
+        (830, 1),
+        (19, 1),
+        (118, 1),
+        (613, 1),
+        (585, 1),
+        (161, 1),
+        (9698, 1),
+        (2146, 1),
+        (112, 8),
+        (11, 1),
+        (97, 6),
+        (73, 3),
+        (283, 2),
+        (50, 5),
+        (1197, 1),
+        (513, 1),
+        (984, 2),
+        (76, 3),
+        (51, 10),
+        (148, 4),
+        (47316, 1),
+        (228, 1),
+        (169, 4),
+        (359, 1),
+        (3265, 1),
+        (56, 5),
+        (391, 1),
+        (241, 2),
+        (397, 1),
+        (473, 1),
+        (23353, 1),
+        (307, 1),
+        (83, 2),
+        (100, 2),
+        (609, 1),
+        (344, 2),
+        (222, 1),
+        (96, 2),
+        (63, 4),
+        (38, 2),
+        (31, 3),
+        (109, 2),
+        (180, 2),
+        (68, 3),
+        (321, 1),
+        (140, 1),
+        (1863, 1),
+        (740, 1),
+        (338, 1),
+        (3867, 1),
+        (90, 4),
+        (474, 1),
+        (491, 1),
+        (2560, 1),
+        (554, 1),
+        (23202, 1),
+        (92, 4),
+        (66, 8),
+        (331, 1),
+        (184, 2),
+        (74, 1),
+        (362, 1),
+        (425, 1),
+        (157, 2),
+        (186, 2),
+        (24, 2),
+        (176, 2),
+        (129, 3),
+        (551, 1),
+        (360, 1),
+        (192, 1),
+        (369, 1),
+        (395, 1),
+        (628, 1),
+        (79, 8),
+        (1011, 1),
+        (23, 2),
+        (205, 1),
+        (52, 3),
+        (146, 1),
+        (82, 3),
+        (104, 2),
+        (142, 1),
+        (921, 1),
+        (144, 1),
+        (88, 4),
+        (322, 1),
+        (187, 2),
+        (1979, 1),
+        (21, 3),
+        (837, 1),
+        (64, 5),
+        (505, 1),
+        (496, 1),
+        (247, 1),
+        (127, 1),
+        (906, 1),
+        (149, 1),
+        (216, 1),
+        (178, 2),
+        (24425, 1),
+        (219, 1),
+        (147, 1),
+        (34, 8),
+        (267, 1),
+        (223, 2),
+        (193, 1),
+        (151, 1),
+        (347, 1),
+        (954, 1),
+        (141, 3),
+        (550, 1),
+        (1712, 1),
+        (199, 1),
+        (4039, 1),
+        (251, 1),
+        (158, 1),
+        (2, 1),
+        (341, 1),
+        (86, 2),
+        (542, 1),
+        (175, 2),
+        (60, 6),
+        (254, 1),
+        (190, 2),
+        (170, 3),
+        (2010, 1),
+        (13768, 1),
+        (1454, 1),
+        (196, 1),
+        (69, 1),
+        (12772, 1),
+        (93, 5),
+        (114, 5),
+        (308, 2),
+        (488, 1),
+        (365, 2),
+        (121, 1),
+        (903, 1),
+        (137, 2),
+        (20, 3),
+        (465, 1),
+        (432, 1),
+        (601, 1),
+        (80, 3),
+        (45, 1),
+        (128, 2),
+        (85, 3),
+        (212, 1),
+        (103, 2),
+        (978, 1),
+        (1929, 1),
+        (2525, 1),
+        (78, 1),
+        (22, 1),
+        (248, 1),
+        (3749, 1),
+        (28, 3),
+        (487, 1),
+        (119, 2),
+        (256, 1),
+        (173, 1),
+        (168, 3),
+        (389, 1),
+        (681, 1),
+        (204, 1),
+        (75, 4),
+        (36, 1),
+        (130, 2),
+        (115, 1),
+        (91, 3),
+        (548, 1),
+        (164, 3),
+        (41, 4),
+        (134, 1),
+        (25, 5),
+        (14016, 1),
+        (210, 3),
+        (229, 2),
+        (396, 1),
+        (53, 1),
+        (777, 1),
+        (59, 3),
+        (220, 3),
+        (94, 1),
+        (377, 2),
+        (298, 1),
+        (273, 2),
+        (131, 3),
+        (30, 4),
+        (54, 3),
+        (523, 1),
+        (300, 1),
+        (61, 2),
+        (686, 1),
+        (111, 3),
+        (3003, 1),
+        (139, 5),
+        (117, 3),
+        (299, 1),
+        (27, 4),
+        (181, 1),
+        (65, 4),
+        (4092, 1),
+        (191, 1),
+        (29, 2),
+        (980, 1),
+        (305, 1),
+        (101, 2),
+        (4, 3),
+        (72, 3),
+        (188, 1),
+        (67, 2),
+        (201, 1),
+        (174, 3),
+        (162, 3),
+        (252, 3),
+        (16, 2),
+        (95, 1),
+        (48, 4),
+        (166, 2),
+        (84, 1),
+        (17, 1),
+        (58, 4),
+        (277, 3),
+        (534, 1),
+        (358, 2),
+        (150, 1),
+        (98, 1),
+        (26, 2),
+        (23494, 1),
+        (664, 1),
+        (445, 1),
+        (120, 1),
+        (355, 1),
+        (537, 1),
+        (126, 1),
+        (200, 2),
+        (375, 1),
+        (233, 1),
+        (62, 3),
+        (125, 1),
+        (42, 2),
+        (772, 1),
+        (47, 2),
+        (37, 5),
+        (203, 3),
+        (10892, 1),
+        (152, 1),
+        (539, 1),
+        (207, 2),
+        (81, 4),
+        (89, 4),
+        (226, 1),
+        (250, 1),
+        (364, 1),
+        (230, 1),
+        (44, 1),
+        (172, 3),
+        (763, 1),
+        (237, 2),
+        (253, 1),
+        (198, 3),
+        (385, 1),
+        (440, 1),
+        (46, 3),
+        (5643, 1),
+        (189, 1),
+        (258, 1),
+        (16785, 1),
+        (57, 2),
+        (77, 4),
+        (259, 1),
+        (401, 1),
+        (406, 1),
+        (135, 2),
+        (348, 1),
+        (33, 2),
+        (122, 3),
+        (328, 1),
+        (102, 2),
+        (143, 3),
+        (334, 1),
+        (183, 3),
+        (459, 1),
+        (138, 2),
+        (70, 6),
+        (295, 1),
+        (87, 4),
+        (40, 2),
+        (133, 1),
+        (71, 3),
+        (402, 1),
+        (313, 2),
+        (325, 2),
+        (195, 1),
+        (107, 4),
+        (392, 1),
+        (49, 1),
+        (271, 1),
+        (518, 1),
+        (2121, 1),
+        (179, 3),
+        (32, 2),
+        (213, 2),
+        (239, 1),
+        (866, 1),
+        (155, 1),
+    ]);
+    let path = generate_dist_img(String::from("user_foo"), 47316, 10, 624.91, 2987.0, &data);
+    dbg!(path);
+}
+
+fn mean_time(data_raw: &HashMap<usize, usize>) -> f64 {
+    data_raw
+        .iter()
+        .fold((0, 0.0), |acc, (time, count)| {
+            let n = acc.0;
+            let m = acc.1;
+            (
+                n + count,
+                (m * n as f64 + (time * count) as f64) / (n + count) as f64,
+            )
+        })
+        .1
+}
+
+#[test]
+fn test_mean() {
+    assert_eq!(mean_time(&HashMap::from([(1, 1), (2, 1), (3, 1)])), 2.0);
+    assert_eq!(mean_time(&HashMap::from([(1, 1), (2, 2), (3, 1)])), 2.0);
+    assert_eq!(mean_time(&HashMap::from([(1, 2), (2, 1), (3, 1)])), 1.75);
+}
+
+fn std_dev(data_raw: &HashMap<usize, usize>, mean: f64) -> f64 {
+    let (sum, count) = data_raw.iter().fold((0.0, 0), |acc, (time, count)| {
+        let dev = *time as f64 - mean;
+        let d = acc.0 + dev * dev * *count as f64;
+        let n = acc.1 + count;
+        (d, n)
+    });
+    dbg!(sum, count);
+    (sum / count as f64).sqrt()
+}
+
+#[test]
+fn test_dev() {
+    let exp = 326.93090735172;
+    let real = std_dev(
+        &HashMap::from([
+            (656, 2),
+            (549, 1),
+            (1, 1),
+            (48, 3),
+            (49, 1),
+            (385, 1),
+            (85, 1),
+            (984, 1),
+        ]),
+        319.0,
+    );
+    dbg!(real);
+    assert!((exp - real).abs() < 1e-6);
+}
+
 async fn daily_message(ctx: &Context, channel: &ChannelId) {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut ran = false;
     println!("Daily loop starting");
+    let typing = channel.start_typing(&ctx.http);
     scan_all(ctx, channel).await.unwrap();
+    typing.stop();
     loop {
         interval.tick().await;
         let now = Utc::now().with_timezone(&Pacific);
@@ -253,6 +749,20 @@ fn make_times(
     time_board
 }
 
+fn user_time_distrib(all_time: &HashMap<usize, DailyScores>, user: &User) -> HashMap<usize, usize> {
+    let mut res = HashMap::new();
+    for game in all_time.iter().filter_map(|(_, game)| {
+        if game.contains_key(&user) {
+            Some(game)
+        } else {
+            None
+        }
+    }) {
+        *res.entry(game.get(&user).unwrap().secs).or_default() += 1;
+    }
+    return res;
+}
+
 async fn scan_all(ctx: &Context, channel: &ChannelId) -> Result<(), String> {
     println!("Start scan");
     let res = scan_since(ctx, channel, Timestamp::from_unix_timestamp(0).unwrap()).await;
@@ -322,8 +832,8 @@ async fn pp_daily(
 
 fn extract_score(message: &str) -> Option<(usize, Score)> {
     lazy_static! {
-        static ref RE: Regex =
-            Regex::new(r"SUTOM #(?P<id>\d+) (?P<score>\d)/6 (?:(?P<hours>\d+)h)?(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)").unwrap();
+    static ref RE: Regex =
+    Regex::new(r"SUTOM #(?P<id>\d+) (?P<score>\d)/6 (?:(?P<hours>\d+)h)?(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)").unwrap();
     }
     let message = message.replace("||", "");
     if let Some(caps) = RE.captures(&message) {
@@ -374,7 +884,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "1. 🥇 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await
+            rank.0.global_name.as_ref().unwrap()
         )
         .unwrap();
     }
@@ -383,7 +893,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "2. 🥈 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await
+            rank.0.global_name.as_ref().unwrap()
         )
         .unwrap();
     }
@@ -392,7 +902,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "3. 🥉 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await
+            rank.0.global_name.as_ref().unwrap()
         )
         .unwrap();
     }
@@ -402,7 +912,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             "{}.       {} {}",
             i + 1,
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await
+            rank.0.global_name.as_ref().unwrap()
         )
         .unwrap();
     }
@@ -481,7 +991,7 @@ async fn pp_times(
             str,
             "{}. {} 🥇x{} 🥈x{} 🥉x{}",
             idx + 1,
-            user.global_name(ctx.http.clone()).await,
+            user.global_name.as_ref().unwrap(),
             table.get(&0).unwrap_or(&0),
             table.get(&1).unwrap_or(&0),
             table.get(&2).unwrap_or(&0)
@@ -499,7 +1009,7 @@ mod tests {
 
     fn make_fake_user(id: u64, name: &str) -> User {
         let mut user = User::default();
-        user.id = UserId(id);
+        user.id = UserId::new(id);
         user.name = name.to_string();
         user
     }
@@ -554,7 +1064,7 @@ mod tests {
                 254,
                 Score {
                     tries: 5,
-                    secs: 56 + 60 * 10
+                    secs: 56 + 60 * 10,
                 }
             ))
         );
@@ -565,7 +1075,7 @@ mod tests {
                 254,
                 Score {
                     tries: 5,
-                    secs: 56 + 60 * 10 + 2 * 3600
+                    secs: 56 + 60 * 10 + 2 * 3600,
                 }
             ))
         );
@@ -580,7 +1090,7 @@ mod tests {
                 254,
                 Score {
                     tries: 5,
-                    secs: 56 + 60 * 10
+                    secs: 56 + 60 * 10,
                 }
             ))
         );
@@ -591,7 +1101,7 @@ mod tests {
                 254,
                 Score {
                     tries: 5,
-                    secs: 56 + 60 * 10
+                    secs: 56 + 60 * 10,
                 }
             ))
         );
@@ -602,7 +1112,7 @@ mod tests {
                 254,
                 Score {
                     tries: 5,
-                    secs: 56 + 60 * 10
+                    secs: 56 + 60 * 10,
                 }
             ))
         );
@@ -619,7 +1129,7 @@ mod tests {
                 682,
                 Score {
                     tries: 6,
-                    secs: 24 * 60 * 60 + 1 * 60 + 38
+                    secs: 24 * 60 * 60 + 1 * 60 + 38,
                 }
             ))
         );
@@ -691,6 +1201,30 @@ mod tests {
     //     let one_day_board = make_times(&leaderboard, 2);
     //     println!("{}", pp_times(&one_day_board, 2));
     // }
+
+    #[test]
+    fn it_distrib() {
+        let mut leaderboard = HashMap::new();
+        let mut day1 = DailyScores::new();
+        day1.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+        day1.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
+        day1.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 12 });
+        let mut day2 = DailyScores::new();
+        day2.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 14 });
+        day2.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 1 });
+        day2.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 2 });
+        let mut day3 = DailyScores::new();
+        day3.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 14 });
+        day3.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 19 });
+        day3.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 32 });
+        leaderboard.insert(1, day1);
+        leaderboard.insert(2, day2);
+        leaderboard.insert(3, day3);
+
+        let alice = make_fake_user(1, "alice");
+        let distrib = user_time_distrib(&leaderboard, &alice);
+        println!("{:?}", distrib);
+    }
 }
 
 #[tokio::main]
@@ -725,8 +1259,8 @@ async fn main() {
         let mut data = client.data.write().await;
         data.insert::<Leaderboard>(leaderboard);
         let conf = Conf {
-            sutom_channel: ChannelId(sutom_channel_id),
-            admin_id: UserId(admin_user_id),
+            sutom_channel: ChannelId::new(sutom_channel_id),
+            admin_id: UserId::new(admin_user_id),
         };
         data.insert::<Config>(conf);
     }
