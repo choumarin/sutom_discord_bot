@@ -57,7 +57,7 @@ pub trait GlobalName {
     async fn global_name(
         &self,
         http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
-    ) -> Result<Option<String>, serenity::Error>;
+    ) -> String;
 }
 
 #[non_exhaustive]
@@ -71,14 +71,18 @@ impl GlobalName for User {
     async fn global_name(
         &self,
         http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
-    ) -> Result<Option<String>, serenity::Error> {
+    ) -> String {
         let route_info = RouteInfo::GetUser { user_id: self.id.0 };
         let request = RequestBuilder::new(route_info);
 
-        http.as_ref()
+        match http
+            .as_ref()
             .fire::<UserWithGlobalName>(request.build())
             .await
-            .map(|u| u.global_name)
+        {
+            Err(..) => self.name.clone(),
+            Ok(u) => u.global_name.unwrap_or(self.name.clone()),
+        }
     }
 }
 
@@ -370,7 +374,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "1. 🥇 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+            rank.0.global_name(ctx.http.clone()).await
         )
         .unwrap();
     }
@@ -379,7 +383,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "2. 🥈 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+            rank.0.global_name(ctx.http.clone()).await
         )
         .unwrap();
     }
@@ -388,7 +392,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             str,
             "3. 🥉 {} {}",
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+            rank.0.global_name(ctx.http.clone()).await
         )
         .unwrap();
     }
@@ -398,7 +402,7 @@ async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context
             "{}.       {} {}",
             i + 1,
             pp_secs(rank.1.secs),
-            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+            rank.0.global_name(ctx.http.clone()).await
         )
         .unwrap();
     }
@@ -477,7 +481,7 @@ async fn pp_times(
             str,
             "{}. {} 🥇x{} 🥈x{} 🥉x{}",
             idx + 1,
-            user.global_name(ctx.http.clone()).await.unwrap().unwrap(),
+            user.global_name(ctx.http.clone()).await,
             table.get(&0).unwrap_or(&0),
             table.get(&1).unwrap_or(&0),
             table.get(&2).unwrap_or(&0)
