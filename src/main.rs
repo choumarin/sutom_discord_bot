@@ -48,6 +48,40 @@ struct Handler {
     is_daily_running: AtomicBool,
 }
 
+use serde::Deserialize;
+use serenity::http::{request::RequestBuilder, routing::RouteInfo, Http};
+
+#[async_trait]
+pub trait GlobalName {
+    /// Gets the user's global name (aka display name) if set.
+    async fn global_name(
+        &self,
+        http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
+    ) -> Result<Option<String>, serenity::Error>;
+}
+
+#[non_exhaustive]
+#[derive(Deserialize)]
+struct UserWithGlobalName {
+    global_name: Option<String>,
+}
+
+#[async_trait]
+impl GlobalName for User {
+    async fn global_name(
+        &self,
+        http: impl AsRef<Http> + std::marker::Send + std::marker::Sync,
+    ) -> Result<Option<String>, serenity::Error> {
+        let route_info = RouteInfo::GetUser { user_id: self.id.0 };
+        let request = RequestBuilder::new(route_info);
+
+        http.as_ref()
+            .fire::<UserWithGlobalName>(request.build())
+            .await
+            .map(|u| u.global_name)
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
@@ -164,7 +198,7 @@ async fn send_scores_for_grid(ctx: &Context, channel: &ChannelId, grid_id: usize
         .read()
         .await;
 
-    let response = match pp_daily(&leaderboard, grid_id) {
+    let response = match pp_daily(&leaderboard, grid_id, ctx).await {
         Ok(s) => s,
         Err(e) => e,
     };
@@ -269,10 +303,14 @@ async fn scan_message(ctx: &Context, message: &Message) {
     }
 }
 
-fn pp_daily(all_time: &HashMap<usize, DailyScores>, grid_id: usize) -> Result<String, String> {
+async fn pp_daily(
+    all_time: &HashMap<usize, DailyScores>,
+    grid_id: usize,
+    ctx: &Context,
+) -> Result<String, String> {
     if let Some(daily_scores) = all_time.get(&grid_id) {
         let ordered = ordered_daily_scores_by_secs(daily_scores);
-        let str = pretty_print_daily_ordered(ordered);
+        let str = pretty_print_daily_ordered(ordered, ctx).await;
         return Ok(format!("Meilleurs temps #{}\n{}", grid_id, str));
     }
     Err(format!("Pas de temps pour grille #{}", grid_id))
@@ -280,7 +318,8 @@ fn pp_daily(all_time: &HashMap<usize, DailyScores>, grid_id: usize) -> Result<St
 
 fn extract_score(message: &str) -> Option<(usize, Score)> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"SUTOM #(\d+) (\d)/6 (?:(\d)+h)?([0-5]\d):([0-5]\d)").unwrap();
+        static ref RE: Regex =
+            Regex::new(r"SUTOM #(\d+) (\d)/6 (?:(\d)+h)?([0-5]\d):([0-5]\d)").unwrap();
     }
     let message = message.replace("||", "");
     if let Some(caps) = RE.captures(&message) {
@@ -314,7 +353,7 @@ fn pp_secs(secs: usize) -> String {
     str
 }
 
-fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
+async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context) -> String {
     // 🟦🟥
     let mut str = String::new();
     // if let Some(rank) = ordered.get(1) {
@@ -327,13 +366,31 @@ fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
     //     str += &format!("🟥 {} {}\n", rank.0, pp_secs(rank.1.secs));
     // }
     if let Some(rank) = ordered.get(0) {
-        writeln!(str, "1. 🥇 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
+        writeln!(
+            str,
+            "1. 🥇 {} {}",
+            pp_secs(rank.1.secs),
+            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+        )
+        .unwrap();
     }
     if let Some(rank) = ordered.get(1) {
-        writeln!(str, "2. 🥈 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
+        writeln!(
+            str,
+            "2. 🥈 {} {}",
+            pp_secs(rank.1.secs),
+            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+        )
+        .unwrap();
     }
     if let Some(rank) = ordered.get(2) {
-        writeln!(str, "3. 🥉 {} {}", pp_secs(rank.1.secs), rank.0.name).unwrap();
+        writeln!(
+            str,
+            "3. 🥉 {} {}",
+            pp_secs(rank.1.secs),
+            rank.0.global_name(ctx.http.clone()).await.unwrap().unwrap()
+        )
+        .unwrap();
     }
     for (i, rank) in ordered.iter().enumerate().skip(3) {
         writeln!(
@@ -486,19 +543,64 @@ mod tests {
     #[test]
     fn it_parses_scores() {
         let message = "SUTOM #254 5/6 10:56";
-        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        assert_eq!(
+            extract_score(message),
+            Some((
+                254,
+                Score {
+                    tries: 5,
+                    secs: 56 + 60 * 10
+                }
+            ))
+        );
         let message = "SUTOM #254 5/6 2h10:56";
-        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10+2*3600})));
+        assert_eq!(
+            extract_score(message),
+            Some((
+                254,
+                Score {
+                    tries: 5,
+                    secs: 56 + 60 * 10 + 2 * 3600
+                }
+            ))
+        );
         let message = "SUTOM #a 5/6 2h10:56";
         assert_eq!(extract_score(message), None);
         let message = "SUTOM #254 x/6 2h10:56";
         assert_eq!(extract_score(message), None);
         let message = "asSUTOM #254 5/6 10:56asd";
-        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        assert_eq!(
+            extract_score(message),
+            Some((
+                254,
+                Score {
+                    tries: 5,
+                    secs: 56 + 60 * 10
+                }
+            ))
+        );
         let message = "||SUTOM #254 5/6 10:56||";
-        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        assert_eq!(
+            extract_score(message),
+            Some((
+                254,
+                Score {
+                    tries: 5,
+                    secs: 56 + 60 * 10
+                }
+            ))
+        );
         let message = "SUTOM #254 5/6 ||10:56||";
-        assert_eq!(extract_score(message), Some((254, Score{tries: 5, secs: 56+60*10})));
+        assert_eq!(
+            extract_score(message),
+            Some((
+                254,
+                Score {
+                    tries: 5,
+                    secs: 56 + 60 * 10
+                }
+            ))
+        );
         let message = "SUTOM #254 5/6 510:56";
         assert_eq!(extract_score(message), None);
         let message = "SUTOM #254 5/6 60:56";
@@ -507,19 +609,19 @@ mod tests {
         assert_eq!(extract_score(message), None);
     }
 
+    // TODO: Add mock ctx?
+    // #[test]
+    // fn it_s_pretty() {
+    //     let mut scores = HashMap::new();
+    //     scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+    //     scores.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
+    //     scores.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 8 });
+    //     scores.insert(make_fake_user(4, "dorothy"), Score { tries: 5, secs: 80 });
 
-    #[test]
-    fn it_s_pretty() {
-        let mut scores = HashMap::new();
-        scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
-        scores.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
-        scores.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 8 });
-        scores.insert(make_fake_user(4, "dorothy"), Score { tries: 5, secs: 80 });
+    //     let ordered = ordered_daily_scores_by_secs(&scores);
 
-        let ordered = ordered_daily_scores_by_secs(&scores);
-
-        println!("{}", pretty_print_daily_ordered(ordered));
-    }
+    //     println!("{}", pretty_print_daily_ordered(ordered));
+    // }
 
     #[test]
     fn grid_id() {
