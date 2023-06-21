@@ -609,6 +609,7 @@ mod tests {
         assert_eq!(extract_score(message), None);
     }
 
+    // TODO: Add mock ctx?
     // #[test]
     // fn it_s_pretty() {
     //     let mut scores = HashMap::new();
