@@ -323,21 +323,21 @@ async fn pp_daily(
 fn extract_score(message: &str) -> Option<(usize, Score)> {
     lazy_static! {
         static ref RE: Regex =
-            Regex::new(r"SUTOM #(\d+) (\d)/6 (?:(\d)+h)?([0-5]\d):([0-5]\d)").unwrap();
+            Regex::new(r"SUTOM #(?P<id>\d+) (?P<score>\d)/6 (?:(?P<hours>\d+)h)?(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)").unwrap();
     }
     let message = message.replace("||", "");
     if let Some(caps) = RE.captures(&message) {
-        let re_to_usize = |key| caps.get(key).unwrap().as_str().parse::<usize>().unwrap();
-        let id = re_to_usize(1);
+        let re_to_usize = |key| caps.name(key).unwrap().as_str().parse::<usize>().unwrap();
+        let id = re_to_usize("id");
         let hours = caps
-            .get(3)
+            .name("hours")
             .map_or(0, |v| v.as_str().parse::<usize>().unwrap());
-        let mins = re_to_usize(4);
-        let mut total_sec = re_to_usize(5);
+        let mins = re_to_usize("minutes");
+        let mut total_sec = re_to_usize("seconds");
         total_sec += mins * 60;
         total_sec += hours * 60 * 60;
         let score = Score {
-            tries: re_to_usize(2),
+            tries: re_to_usize("score"),
             secs: total_sec,
         };
 
@@ -612,6 +612,17 @@ mod tests {
         assert_eq!(extract_score(message), None);
         let message = "SUTOM #254 5/6 10:66";
         assert_eq!(extract_score(message), None);
+        let message = "#SUTOM #682 6/6 24h01:38";
+        assert_eq!(
+            extract_score(message),
+            Some((
+                682,
+                Score {
+                    tries: 6,
+                    secs: 24 * 60 * 60 + 1 * 60 + 38 * 60
+                }
+            ))
+        );
     }
 
     // TODO: Add mock ctx?
