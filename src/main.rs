@@ -3,18 +3,18 @@ use chrono_tz::US::Pacific;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serenity::futures::StreamExt;
+use serenity::model::Timestamp;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::UserId;
 use serenity::model::user::User;
-use serenity::model::Timestamp;
 use serenity::prelude::*;
 use serenity::{async_trait, model::prelude::ChannelId};
 use std::collections::HashMap;
 use std::env;
-use std::fmt::{format, Formatter, Write as _};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fmt::{Formatter, Write as _, format};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time;
 
@@ -23,10 +23,10 @@ use charming::element::{AxisLabel, AxisTick, AxisType, Color};
 use charming::series::{Bar, Line};
 use charming::theme::Theme;
 use charming::{
+    Chart, ImageFormat, ImageRenderer,
     component::Legend,
     element::ItemStyle,
     series::{Pie, PieRoseType},
-    Chart, ImageFormat, ImageRenderer,
 };
 
 #[derive(Debug, PartialEq)]
@@ -62,7 +62,7 @@ struct Handler {
 use serde::Deserialize;
 use serenity::all::{CreateAttachment, CreateMessage};
 use serenity::http::Http;
-use tempfile::{tempfile, Builder, NamedTempFile, TempPath};
+use tempfile::{Builder, NamedTempFile, TempPath, tempfile};
 
 #[async_trait]
 pub trait GlobalName {
@@ -212,7 +212,7 @@ fn generate_dist_img(
     let bar_data = (0..max_time)
         .map(|x| vec![x as f64 / 60.0, (*data.get(&x).unwrap_or(&0)) as f64])
         .collect();
-    
+
     let mean_hours = (mean_time / 60.0).floor();
     let mean_min = (mean_time - mean_hours * 60.0).floor();
     let mean_sec = (mean_time * 60.0 % 60.0).round();
@@ -824,7 +824,7 @@ async fn pp_daily(
 ) -> Result<String, String> {
     if let Some(daily_scores) = all_time.get(&grid_id) {
         let ordered = ordered_daily_scores_by_secs(daily_scores);
-        let str = pretty_print_daily_ordered(ordered, ctx).await;
+        let str = pretty_print_daily_ordered(ordered).await;
         return Ok(format!("Meilleurs temps #{}\n{}", grid_id, str));
     }
     Err(format!("Pas de temps pour grille #{}", grid_id))
@@ -867,52 +867,31 @@ fn pp_secs(secs: usize) -> String {
     str
 }
 
-async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>, ctx: &Context) -> String {
-    // 🟦🟥
+async fn pretty_print_daily_ordered(ordered: Vec<(&User, &Score)>) -> String {
     let mut str = String::new();
-    // if let Some(rank) = ordered.get(1) {
-    //     str += &format!("🟦🟥 {} {}\n", rank.0, pp_secs(rank.1.secs));
-    // }
-    // if let Some(rank) = ordered.get(0) {
-    //     str += &format!("🟦🟦🟥 {} {}\n", rank.0, pp_secs(rank.1.secs));
-    // }
-    // if let Some(rank) = ordered.get(2) {
-    //     str += &format!("🟥 {} {}\n", rank.0, pp_secs(rank.1.secs));
-    // }
-    if let Some(rank) = ordered.get(0) {
-        writeln!(
-            str,
-            "1. 🥇 {} {}",
-            pp_secs(rank.1.secs),
-            rank.0.global_name.as_ref().unwrap()
-        )
-        .unwrap();
+    let mut v: Vec<Vec<(&User, &Score)>> = vec![];
+    for r in ordered {
+        if let Some(le) = v.last_mut()
+            && let Some(l) = le.first()
+            && r.1.secs == l.1.secs
+        {
+            le.push(r);
+        } else {
+            v.push(vec![r]);
+        }
     }
-    if let Some(rank) = ordered.get(1) {
+    let medals = ['🥇', '🥈', '🥉', '🍫'];
+    for (pos, v) in v.iter().enumerate() {
+        let w = v
+            .iter()
+            .map(|x| x.0.global_name.clone().unwrap())
+            .collect::<Vec<String>>();
+        let m = medals.get(pos).unwrap_or(&medals[3]);
         writeln!(
             str,
-            "2. 🥈 {} {}",
-            pp_secs(rank.1.secs),
-            rank.0.global_name.as_ref().unwrap()
-        )
-        .unwrap();
-    }
-    if let Some(rank) = ordered.get(2) {
-        writeln!(
-            str,
-            "3. 🥉 {} {}",
-            pp_secs(rank.1.secs),
-            rank.0.global_name.as_ref().unwrap()
-        )
-        .unwrap();
-    }
-    for (i, rank) in ordered.iter().enumerate().skip(3) {
-        writeln!(
-            str,
-            "{}.       {} {}",
-            i + 1,
-            pp_secs(rank.1.secs),
-            rank.0.global_name.as_ref().unwrap()
+            "{pos}. {m} {} {}",
+            pp_secs(v.get(0).unwrap().1.secs),
+            w.join(", ")
         )
         .unwrap();
     }
@@ -1011,6 +990,7 @@ mod tests {
         let mut user = User::default();
         user.id = UserId::new(id);
         user.name = name.to_string();
+        user.global_name = Some(name.to_string());
         user
     }
 
@@ -1136,18 +1116,19 @@ mod tests {
     }
 
     // TODO: Add mock ctx?
-    // #[test]
-    // fn it_s_pretty() {
-    //     let mut scores = HashMap::new();
-    //     scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
-    //     scores.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
-    //     scores.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 8 });
-    //     scores.insert(make_fake_user(4, "dorothy"), Score { tries: 5, secs: 80 });
+    #[tokio::test]
+        async fn it_s_pretty() {
+        let mut scores = HashMap::new();
+        scores.insert(make_fake_user(1, "alice"), Score { tries: 2, secs: 9 });
+        scores.insert(make_fake_user(2, "bob"), Score { tries: 1, secs: 10 });
+        scores.insert(make_fake_user(3, "chary"), Score { tries: 3, secs: 8 });
+        scores.insert(make_fake_user(4, "dorothy"), Score { tries: 5, secs: 80 });
+        scores.insert(make_fake_user(5, "edmund"), Score { tries: 3, secs: 8 });
 
-    //     let ordered = ordered_daily_scores_by_secs(&scores);
+        let ordered = ordered_daily_scores_by_secs(&scores);
 
-    //     println!("{}", pretty_print_daily_ordered(ordered));
-    // }
+        println!("{}", pretty_print_daily_ordered(ordered).await);
+    }
 
     #[test]
     fn grid_id() {
