@@ -1,9 +1,9 @@
-FROM rust:buster as builder
+FROM rust:bookworm as builder
 
 WORKDIR /code
 RUN git clone --depth 1 https://github.com/choumarin/sutom_discord_bot.git && cd sutom_discord_bot && cargo build --release
 
-FROM debian:buster-slim
+FROM debian:bookworm-slim
 
 RUN apt-get update
 RUN apt-get install -y libfontconfig libfontconfig1-dev
